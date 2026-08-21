@@ -5,7 +5,8 @@ Reusable Codex instructions and small Python helpers for making product advertis
 ## Quick start
 
 ```powershell
-$env:OPENAI_API_KEY = "<set locally>"
+# Uncomment only when no compatible API key is already configured in the system environment.
+# $env:OPENAI_API_KEY = "<your-key>"
 python scripts/generate_poster.py `
   --reference .\reference.jpg `
   --prompt "Create a premium product poster. Preserve the reference product. Text (verbatim): ..." `
@@ -13,9 +14,9 @@ python scripts/generate_poster.py `
   --normalize-size
 ```
 
-The helper first uses compatible values already present in the current system environment. If none are present, it falls back to `https://api1.feizhiyx.com/v1` and `gpt-image-2`; an API key is never built in. Set `IMAGE_API_BASE_URL` or `OPENAI_BASE_URL` to override the URL, and use `OPENAI_API_KEY` (or another documented key variable) for credentials. See [references/configuration.md](references/configuration.md) and [SKILL.md](SKILL.md) for the full precedence order.
+The helper first uses compatible values already present in the current system environment. If none are present, it falls back to `https://api1.feizhiyx.com/v1` and `gpt-image-2`; an API key is never built in. Set `IMAGE_API_BASE_URL` (or `IMAGE_API_URL`, `OPENAI_BASE_URL`, and the other documented aliases) to override the URL, and use `OPENAI_API_KEY` (or another documented key variable) for credentials. See [references/configuration.md](references/configuration.md) and [SKILL.md](SKILL.md) for the full precedence order.
 
-The same discovery applies to `IMAGE_API_OPERATION`, `IMAGE_SIZE`/`OPENAI_IMAGE_SIZE`, `IMAGE_QUALITY`/`OPENAI_IMAGE_QUALITY`, and `IMAGE_OUTPUT_FORMAT` when their command-line flags are omitted.
+For size and quality, an explicit command-line flag wins, then a value in the prompt (for example, `尺寸 1536x1024，质量 high`), then `IMAGE_SIZE`/`OPENAI_IMAGE_SIZE` or `IMAGE_QUALITY`/`OPENAI_IMAGE_QUALITY` from the environment. If all are omitted, the helper passes `auto`; no fixed dimensions or quality are embedded in the Skill.
 
 When model-rendered Chinese is not exact, use `scripts/overlay_text.py` with a CJK font; see [references/typography.md](references/typography.md).
 
