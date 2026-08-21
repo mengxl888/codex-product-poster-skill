@@ -50,7 +50,11 @@ class HelperTests(unittest.TestCase):
                 ("API_KEY", "API_KEY"),
             )
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict(
+            "os.environ",
+            {"CODEX_HOME": str(Path("C:/codex-test-no-config"))},
+            clear=True,
+        ):
             self.assertEqual(
                 generate_poster.resolve_base_url(None),
                 (generate_poster.DEFAULT_BASE_URL, "skill-default"),
@@ -63,6 +67,102 @@ class HelperTests(unittest.TestCase):
                 generate_poster.resolve_api_key_env(None),
                 ("OPENAI_API_KEY", "no-key-found"),
             )
+
+    def test_codex_config_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").write_text(
+                """
+model_provider = "custom"
+
+[profiles.alt]
+model_provider = "alternate"
+
+[model_providers.custom]
+base_url = "https://custom.example/v1"
+env_key = "CODEX_TEST_IMAGE_KEY"
+
+[model_providers.alternate]
+base_url = "https://alternate.example/v1"
+env_key = "CODEX_ALT_IMAGE_KEY"
+""".strip(),
+                encoding="utf-8",
+            )
+            (home / "auth.json").write_text(
+                json.dumps({"OPENAI_API_KEY": "auth-file-key"}),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "CODEX_HOME": str(home),
+                    "CODEX_TEST_IMAGE_KEY": "provider-env-key",
+                },
+                clear=True,
+            ):
+                settings = generate_poster.discover_codex_settings()
+                self.assertEqual(settings.base_url, "https://custom.example/v1")
+                self.assertEqual(settings.api_key, "provider-env-key")
+                self.assertIn("config.toml", settings.base_url_source)
+                self.assertIn("env_key", settings.api_key_source)
+                self.assertEqual(
+                    generate_poster.resolve_base_url(None, settings),
+                    ("https://custom.example/v1", settings.base_url_source),
+                )
+                self.assertEqual(
+                    generate_poster.resolve_api_key(None, settings),
+                    ("provider-env-key", settings.api_key_source),
+                )
+
+            with patch.dict(
+                "os.environ",
+                {"CODEX_HOME": str(home), "CODEX_PROFILE": "alt"},
+                clear=True,
+            ):
+                settings = generate_poster.discover_codex_settings()
+                self.assertEqual(settings.base_url, "https://alternate.example/v1")
+                self.assertEqual(settings.api_key, "auth-file-key")
+                self.assertIn("codex-auth", settings.api_key_source)
+
+            with patch.dict("sys.modules", {"tomllib": None}):
+                fallback_config = generate_poster._load_codex_toml(home / "config.toml")
+                self.assertEqual(fallback_config["model_provider"], "custom")
+                self.assertEqual(
+                    fallback_config["model_providers"]["custom"]["base_url"],
+                    "https://custom.example/v1",
+                )
+
+    def test_codex_config_does_not_override_explicit_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "config.toml").write_text(
+                """
+model_provider = "custom"
+[model_providers.custom]
+base_url = "https://codex.example/v1"
+env_key = "CODEX_TEST_IMAGE_KEY"
+""".strip(),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "CODEX_HOME": str(home),
+                    "IMAGE_API_BASE_URL": "https://env.example/v1",
+                    "CODEX_TEST_IMAGE_KEY": "codex-provider-key",
+                    "OPENAI_API_KEY": "generic-env-key",
+                },
+                clear=True,
+            ):
+                settings = generate_poster.discover_codex_settings()
+                self.assertEqual(
+                    generate_poster.resolve_base_url(None, settings),
+                    ("https://env.example/v1", "IMAGE_API_BASE_URL"),
+                )
+                self.assertEqual(
+                    generate_poster.resolve_api_key(None, settings),
+                    ("codex-provider-key", settings.api_key_source),
+                )
 
     def test_base_url_normalization(self):
         self.assertEqual(
