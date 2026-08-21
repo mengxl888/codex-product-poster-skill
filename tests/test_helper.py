@@ -1,4 +1,6 @@
 import base64
+from contextlib import redirect_stderr
+import io
 import json
 from pathlib import Path
 import sys
@@ -83,6 +85,83 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 generate_poster.normalize_base_url(unsafe)
 
+    def test_prompt_size_and_quality_inference(self):
+        self.assertEqual(
+            generate_poster.infer_size_from_prompt("输出分辨率 2160×3840"),
+            ("2160x3840", "prompt"),
+        )
+        self.assertEqual(
+            generate_poster.infer_size_from_prompt("画布 1536*1024"),
+            ("1536x1024", "prompt"),
+        )
+        self.assertEqual(
+            generate_poster.infer_quality_from_prompt("质量：高质量"),
+            ("high", "prompt"),
+        )
+        self.assertEqual(
+            generate_poster.infer_quality_from_prompt("quality medium"),
+            ("medium", "prompt"),
+        )
+        self.assertEqual(
+            generate_poster.infer_quality_from_prompt("高端产品摄影"),
+            (generate_poster.DEFAULT_QUALITY, "skill-auto"),
+        )
+
+    def test_size_and_quality_precedence(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "IMAGE_SIZE": "1024x1024",
+                "OPENAI_IMAGE_SIZE": "1536x1024",
+                "IMAGE_QUALITY": "low",
+                "OPENAI_IMAGE_QUALITY": "medium",
+            },
+            clear=True,
+        ):
+            # A one-off prompt request overrides the configured system value.
+            self.assertEqual(
+                generate_poster.resolve_size(None, "尺寸 2160x3840"),
+                ("2160x3840", "prompt"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_quality(None, "质量 high"),
+                ("high", "prompt"),
+            )
+            # Without a prompt value, the current environment is used.
+            self.assertEqual(
+                generate_poster.resolve_size(None, "方形海报"),
+                ("1024x1024", "IMAGE_SIZE"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_quality(None, "方形海报"),
+                ("low", "IMAGE_QUALITY"),
+            )
+            # Explicit flags remain the highest-precedence source.
+            self.assertEqual(
+                generate_poster.resolve_size("1536x1024", "尺寸 2160x3840"),
+                ("1536x1024", "--size"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_quality("medium", "质量 high"),
+                ("medium", "--quality"),
+            )
+
+            with patch.dict("os.environ", {"IMAGE_QUALITY": "HIGH"}, clear=True):
+                self.assertEqual(
+                    generate_poster.resolve_quality(None, "方形海报"),
+                    ("high", "IMAGE_QUALITY"),
+                )
+
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                generate_poster.resolve_size(None, "没有指定尺寸"),
+                (generate_poster.DEFAULT_SIZE, "skill-auto"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_quality(None, "没有指定质量"),
+                (generate_poster.DEFAULT_QUALITY, "skill-auto"),
+            )
+
     def test_image_headers(self):
         png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + bytes.fromhex("0000040000000400")
         self.assertEqual(generate_poster.image_dimensions(png), (1024, 1024))
@@ -108,6 +187,19 @@ class HelperTests(unittest.TestCase):
             generate_poster.response_image(payload, "application/json", 1),
             b"image-bytes",
         )
+
+    def test_download_error_redacts_returned_url(self):
+        signed_url = "https://cdn.example.test/image.png?token=secret-token"
+        error = generate_poster.urllib.error.URLError(signed_url)
+        output = io.StringIO()
+        with patch("urllib.request.urlopen", side_effect=error):
+            with redirect_stderr(output):
+                with self.assertRaises(SystemExit):
+                    generate_poster.download_image(signed_url, 1, "secret-token")
+        message = output.getvalue()
+        self.assertNotIn(signed_url, message)
+        self.assertNotIn("secret-token", message)
+        self.assertIn("[REDACTED_URL]", message)
 
 
 if __name__ == "__main__":
