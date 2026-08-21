@@ -1,0 +1,8 @@
+interface:
+  display_name: "Product Poster Generator"
+  short_description: "Generate branded product posters from reference images"
+  brand_color: "#C89B3C"
+  default_prompt: "Use $codex-product-poster to create a polished product poster from this reference image and brief."
+
+policy:
+  allow_implicit_invocation: true
