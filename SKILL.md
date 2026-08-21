@@ -9,11 +9,11 @@ Use this skill for a product-focused promotional image, especially when the user
 
 ## Defaults
 
-- Relay base URL: `https://api1.feizhiyx.com/v1` (override with `IMAGE_API_BASE_URL`).
-- Model: `gpt-image-2` (override only when the user explicitly asks for another model).
+- Configuration: first use the current environment's compatible settings, then fall back to the Skill defaults. URL precedence is `IMAGE_API_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_URL`, `API_URL`, then `https://api1.feizhiyx.com/v1`.
+- Model: use `CODEX_IMAGE_MODEL`, `IMAGE_MODEL`, or `OPENAI_IMAGE_MODEL` when set; otherwise fall back to `gpt-image-2` (override only when the user explicitly asks for another model).
 - Endpoint: `/images/edits` when a reference image is supplied; `/images/generations` otherwise. This is the OpenAI-compatible relay operation verified for the default service; use `--operation` to make the choice explicit.
 - Default output: `1024x1024` PNG, high quality.
-- Credential: read `OPENAI_API_KEY` (or the variable named by `IMAGE_API_KEY_ENV`); never put a key in a prompt, file, command log, or git commit.
+- Credential: automatically use the first non-empty key variable in `OPENAI_API_KEY`, `IMAGE_API_KEY`, `CODEX_IMAGE_API_KEY`, `API_KEY`, unless `IMAGE_API_KEY_ENV` names a specific variable. Never put a key in a prompt, file, command log, or git commit.
 
 ## Workflow
 
@@ -23,7 +23,6 @@ Use this skill for a product-focused promotional image, especially when the user
 4. Run the bundled helper. Prefer a prompt file when the prompt contains many quotation marks or newlines:
 
    ```powershell
-   $env:OPENAI_API_KEY = "<set locally, do not commit>"
    python scripts/generate_poster.py `
      --reference .\reference.png `
      --prompt-file .\prompt.txt `
@@ -31,7 +30,7 @@ Use this skill for a product-focused promotional image, especially when the user
      --normalize-size
    ```
 
-   Resolve `scripts/` relative to this skill directory when the current project is elsewhere.
+   The helper discovers environment variables at invocation time; set them in the current shell only when they are not already configured. Resolve `scripts/` relative to this skill directory when the current project is elsewhere.
 
    For a poster without a reference, omit `--reference`; the helper automatically uses the generations endpoint. Use `--operation edit|generate` when the relay behavior needs to be explicit. Use `--dry-run` to inspect the request without calling the service. Retries default to zero because image POSTs may be billable; opt into `--retries 1` only when the user accepts possible duplicate jobs.
 5. Inspect the returned image with the available image viewer. Check product identity, full subject visibility, text accuracy, layout safety margins, and absence of extra objects or gibberish. For exact Chinese copy, ask the model for a text-free safe area and run `scripts/overlay_text.py` with a CJK font when lettering is malformed; do not silently deliver unreadable copy. Read [references/typography.md](references/typography.md) for the fallback.
