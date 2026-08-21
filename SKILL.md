@@ -9,10 +9,11 @@ Use this skill for a product-focused promotional image, especially when the user
 
 ## Defaults
 
-- Configuration: first use the current environment's compatible settings, then fall back to the Skill defaults. URL precedence is `IMAGE_API_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_URL`, `API_URL`, then `https://api1.feizhiyx.com/v1`.
+- Configuration: first use the current environment's compatible settings, then fall back to the Skill defaults. URL precedence is `IMAGE_API_BASE_URL`, `IMAGE_API_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_URL`, `API_URL`, then `https://api1.feizhiyx.com/v1`.
 - Model: use `CODEX_IMAGE_MODEL`, `IMAGE_MODEL`, or `OPENAI_IMAGE_MODEL` when set; otherwise fall back to `gpt-image-2` (override only when the user explicitly asks for another model).
 - Endpoint: `/images/edits` when a reference image is supplied; `/images/generations` otherwise. This is the OpenAI-compatible relay operation verified for the default service; use `--operation` to make the choice explicit.
-- Default output: `1024x1024` PNG, high quality.
+- Output defaults: `IMAGE_SIZE`/`OPENAI_IMAGE_SIZE` or `1024x1024`; `IMAGE_QUALITY`/`OPENAI_IMAGE_QUALITY` or high; `IMAGE_OUTPUT_FORMAT` or the output filename extension (PNG when no extension is given).
+- `IMAGE_API_OPERATION` can select `auto`, `edit`, or `generate` when the flag is omitted.
 - Credential: automatically use the first non-empty key variable in `OPENAI_API_KEY`, `IMAGE_API_KEY`, `CODEX_IMAGE_API_KEY`, `API_KEY`, unless `IMAGE_API_KEY_ENV` names a specific variable. Never put a key in a prompt, file, command log, or git commit.
 
 ## Workflow
