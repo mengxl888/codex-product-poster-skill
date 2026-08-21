@@ -6,13 +6,15 @@
 
 ```powershell
 # Only set these when the current system environment does not already provide them.
-$env:OPENAI_API_KEY = "<local secret>"
-$env:IMAGE_API_BASE_URL = "https://api1.feizhiyx.com/v1"
+# $env:OPENAI_API_KEY = "<local secret>"
+# $env:IMAGE_API_BASE_URL = "https://api1.feizhiyx.com/v1"
 ```
 
 At every invocation the helper first reads the current process environment. URL precedence is `IMAGE_API_BASE_URL`, `IMAGE_API_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_URL`, `API_URL`, then the Skill fallback `https://api1.feizhiyx.com/v1`. Key precedence is a non-empty variable named by `IMAGE_API_KEY_ENV` (if set), then the first non-empty variable among `OPENAI_API_KEY`, `IMAGE_API_KEY`, `CODEX_IMAGE_API_KEY`, and `API_KEY`. If the selector is empty or stale, automatic key discovery continues. If no key exists, the helper stops with a setup error; it never contains a built-in secret. Model precedence is `--model`, then `CODEX_IMAGE_MODEL`, `IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, then `gpt-image-2`.
 
 `IMAGE_API_BASE_URL` may include or omit the `/v1` suffix, but must stop at the API version (not at `/images/edits` or `/images/generations`) and must not contain credentials, query parameters, or fragments. The helper normalizes it. `IMAGE_API_KEY_ENV` can name a different environment variable when the local setup uses one. Command-line flags such as `--base-url`, `--model`, and `--api-key-env` override automatic discovery. `IMAGE_API_OPERATION`, `IMAGE_SIZE`/`OPENAI_IMAGE_SIZE`, `IMAGE_QUALITY`/`OPENAI_IMAGE_QUALITY`, and `IMAGE_OUTPUT_FORMAT` are also recognized when their command-line flags are omitted.
+
+Size and quality use this order: explicit command-line flag, value stated in the prompt, current system environment, then `auto`. The prompt parser recognizes forms such as `尺寸 1536x1024`, `输出分辨率 2160×3840`, `quality high`, and `质量：高`. A prompt value intentionally overrides an environment value so a one-off request can change the system default. Invalid requested dimensions or quality values stop with a validation error instead of silently falling back.
 
 ## Common commands
 
