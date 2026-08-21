@@ -36,8 +36,8 @@ DEFAULT_FORMAT = "png"
 DEFAULT_RETRIES = 0
 MAX_REFERENCE_BYTES = 50 * 1024 * 1024
 
-# Prefer skill-specific settings, then common OpenAI-compatible settings, and
-# finally the generic names some local shells use. Empty variables are ignored.
+# Keep compatibility aliases centralized; resolution functions apply the more
+# specific Skill/Codex/generic precedence without ever treating empty values as set.
 BASE_URL_ENV_NAMES = (
     "IMAGE_API_BASE_URL",
     "IMAGE_API_URL",
