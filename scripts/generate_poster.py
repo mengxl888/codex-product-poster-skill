@@ -33,6 +33,23 @@ DEFAULT_FORMAT = "png"
 DEFAULT_RETRIES = 0
 MAX_REFERENCE_BYTES = 50 * 1024 * 1024
 
+# Prefer skill-specific settings, then common OpenAI-compatible settings, and
+# finally the generic names some local shells use. Empty variables are ignored.
+BASE_URL_ENV_NAMES = (
+    "IMAGE_API_BASE_URL",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENAI_API_URL",
+    "API_URL",
+)
+MODEL_ENV_NAMES = ("CODEX_IMAGE_MODEL", "IMAGE_MODEL", "OPENAI_IMAGE_MODEL")
+API_KEY_ENV_NAMES = (
+    "OPENAI_API_KEY",
+    "IMAGE_API_KEY",
+    "CODEX_IMAGE_API_KEY",
+    "API_KEY",
+)
+
 
 def fail(message: str, code: int = 1) -> NoReturn:
     print(f"Error: {message}", file=sys.stderr)
@@ -41,6 +58,42 @@ def fail(message: str, code: int = 1) -> NoReturn:
 
 def warn(message: str) -> None:
     print(f"Warning: {message}", file=sys.stderr)
+
+
+def first_nonempty_env(names: Iterable[str]) -> Tuple[Optional[str], Optional[str]]:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value, name
+    return None, None
+
+
+def resolve_base_url(explicit: Optional[str]) -> Tuple[str, str]:
+    if explicit:
+        return explicit, "--base-url"
+    value, source = first_nonempty_env(BASE_URL_ENV_NAMES)
+    if value is not None and source is not None:
+        return value, source
+    return DEFAULT_BASE_URL, "skill-default"
+
+
+def resolve_model(explicit: Optional[str]) -> Tuple[str, str]:
+    if explicit:
+        return explicit, "--model"
+    value, source = first_nonempty_env(MODEL_ENV_NAMES)
+    if value is not None and source is not None:
+        return value, source
+    return DEFAULT_MODEL, "skill-default"
+
+
+def resolve_api_key_env(explicit: Optional[str]) -> Tuple[str, str]:
+    selector = explicit or os.getenv("IMAGE_API_KEY_ENV", "").strip()
+    if selector:
+        return selector, "--api-key-env" if explicit else "IMAGE_API_KEY_ENV"
+    _, source = first_nonempty_env(API_KEY_ENV_NAMES)
+    if source is not None:
+        return source, source
+    return API_KEY_ENV_NAMES[0], "no-key-found"
 
 
 def read_prompt(prompt: Optional[str], prompt_file: Optional[str]) -> str:
@@ -324,17 +377,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file")
     parser.add_argument("--output", required=True, help="output image path")
-    parser.add_argument("--base-url", default=os.getenv("IMAGE_API_BASE_URL", DEFAULT_BASE_URL))
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--base-url", help="override auto-discovered API base URL")
+    parser.add_argument("--model", help="override auto-discovered image model")
     parser.add_argument(
         "--operation",
         choices=("auto", "edit", "generate"),
-        default=os.getenv("IMAGE_API_OPERATION", "auto"),
+        default=os.getenv("IMAGE_API_OPERATION", "auto") or "auto",
         help="auto selects edit with --reference and generate without it",
     )
-    parser.add_argument("--size", default=DEFAULT_SIZE)
-    parser.add_argument("--quality", default=DEFAULT_QUALITY, choices=("low", "medium", "high", "auto"))
-    parser.add_argument("--output-format", choices={"png", "jpeg", "jpg", "webp"})
+    parser.add_argument(
+        "--size",
+        default=(os.getenv("IMAGE_SIZE") or os.getenv("OPENAI_IMAGE_SIZE") or DEFAULT_SIZE),
+    )
+    parser.add_argument(
+        "--quality",
+        default=(os.getenv("IMAGE_QUALITY") or os.getenv("OPENAI_IMAGE_QUALITY") or DEFAULT_QUALITY),
+        choices=("low", "medium", "high", "auto"),
+    )
+    parser.add_argument(
+        "--output-format",
+        default=(os.getenv("IMAGE_OUTPUT_FORMAT") or None),
+        choices=("png", "jpeg", "jpg", "webp"),
+    )
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument(
         "--retries",
@@ -342,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RETRIES,
         help="additional retries for transient failures; default 0 avoids duplicate billable POSTs",
     )
-    parser.add_argument("--api-key-env", default=os.getenv("IMAGE_API_KEY_ENV", "OPENAI_API_KEY"))
+    parser.add_argument("--api-key-env", help="name of the environment variable containing the API key")
     parser.add_argument("--normalize-size", action="store_true", help="resize to --size when Pillow is available")
     parser.add_argument(
         "--strict-size",
@@ -358,6 +422,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     prompt = read_prompt(args.prompt, args.prompt_file)
+    base_url_raw, base_url_source = resolve_base_url(args.base_url)
+    model, model_source = resolve_model(args.model)
+    api_key_env, api_key_source = resolve_api_key_env(args.api_key_env)
     validate_size(args.size)
     if args.retries < 0 or args.retries > 8:
         fail("--retries must be between 0 and 8")
@@ -376,7 +443,7 @@ def main() -> int:
         if reference.stat().st_size > MAX_REFERENCE_BYTES:
             fail("reference image exceeds the 50MB API limit")
 
-    base_url = normalize_base_url(args.base_url)
+    base_url = normalize_base_url(base_url_raw)
     if args.operation == "edit" and not reference:
         fail("--operation edit requires --reference")
     if args.operation == "generate" and reference:
@@ -384,7 +451,7 @@ def main() -> int:
     use_edit = args.operation == "edit" or (args.operation == "auto" and reference is not None)
     endpoint = "/images/edits" if use_edit else "/images/generations"
     fields = {
-        "model": args.model,
+        "model": model,
         "prompt": prompt,
         "size": args.size,
         "quality": args.quality,
@@ -405,7 +472,12 @@ def main() -> int:
                 {
                     "endpoint": base_url + endpoint,
                     "operation": "edit" if use_edit else "generate",
-                    "model": args.model,
+                    "model": model,
+                    "configuration_sources": {
+                        "base_url": base_url_source,
+                        "model": model_source,
+                        "api_key": api_key_source,
+                    },
                     "size": args.size,
                     "quality": args.quality,
                     "output_format": output_format_value,
@@ -419,11 +491,14 @@ def main() -> int:
         )
         return 0
 
-    api_key = os.getenv(args.api_key_env, "").strip()
+    api_key = os.getenv(api_key_env, "").strip()
     if not api_key:
-        fail(f"environment variable {args.api_key_env} is not set")
+        fail(
+            f"no API key found; set one of {', '.join(API_KEY_ENV_NAMES)} "
+            f"or configure IMAGE_API_KEY_ENV (selected variable: {api_key_env})"
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Calling {base_url + endpoint} with model {args.model} ...", file=sys.stderr)
+    print(f"Calling {base_url + endpoint} with model {model} ...", file=sys.stderr)
     try:
         response, content_type_response = request_bytes(
             base_url + endpoint,
@@ -472,7 +547,12 @@ def main() -> int:
                 {
                     "endpoint": base_url + endpoint,
                     "operation": "edit" if use_edit else "generate",
-                    "model": args.model,
+                    "model": model,
+                    "configuration_sources": {
+                        "base_url": base_url_source,
+                        "model": model_source,
+                        "api_key": api_key_source,
+                    },
                     "size_requested": args.size,
                     "size_actual": list(dimensions) if dimensions else None,
                     "quality": args.quality,
