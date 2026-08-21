@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,45 @@ import generate_poster  # noqa: E402
 
 
 class HelperTests(unittest.TestCase):
+    def test_environment_discovery_and_fallback(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "IMAGE_API_BASE_URL": "https://skill.example/v1",
+                "OPENAI_BASE_URL": "https://openai.example/v1",
+                "OPENAI_API_KEY": "key-one",
+                "API_KEY": "key-two",
+                "CODEX_IMAGE_MODEL": "custom-image-model",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                generate_poster.resolve_base_url(None),
+                ("https://skill.example/v1", "IMAGE_API_BASE_URL"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_model(None),
+                ("custom-image-model", "CODEX_IMAGE_MODEL"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_api_key_env(None),
+                ("OPENAI_API_KEY", "OPENAI_API_KEY"),
+            )
+
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                generate_poster.resolve_base_url(None),
+                (generate_poster.DEFAULT_BASE_URL, "skill-default"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_model(None),
+                (generate_poster.DEFAULT_MODEL, "skill-default"),
+            )
+            self.assertEqual(
+                generate_poster.resolve_api_key_env(None),
+                ("OPENAI_API_KEY", "no-key-found"),
+            )
+
     def test_base_url_normalization(self):
         self.assertEqual(
             generate_poster.normalize_base_url("https://example.test"),
