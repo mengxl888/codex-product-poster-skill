@@ -9,8 +9,10 @@ request preview, metadata, or error messages.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import binascii
+from dataclasses import dataclass
 import json
 import mimetypes
 import os
@@ -44,6 +46,13 @@ BASE_URL_ENV_NAMES = (
     "OPENAI_API_URL",
     "API_URL",
 )
+BASE_URL_SKILL_ENV_NAMES = ("IMAGE_API_BASE_URL", "IMAGE_API_URL")
+BASE_URL_GENERIC_ENV_NAMES = (
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENAI_API_URL",
+    "API_URL",
+)
 MODEL_ENV_NAMES = ("CODEX_IMAGE_MODEL", "IMAGE_MODEL", "OPENAI_IMAGE_MODEL")
 API_KEY_ENV_NAMES = (
     "OPENAI_API_KEY",
@@ -51,6 +60,8 @@ API_KEY_ENV_NAMES = (
     "CODEX_IMAGE_API_KEY",
     "API_KEY",
 )
+API_KEY_SKILL_ENV_NAMES = ("IMAGE_API_KEY", "CODEX_IMAGE_API_KEY")
+API_KEY_GENERIC_ENV_NAMES = ("OPENAI_API_KEY", "API_KEY")
 SIZE_ENV_NAMES = ("IMAGE_SIZE", "OPENAI_IMAGE_SIZE")
 QUALITY_ENV_NAMES = ("IMAGE_QUALITY", "OPENAI_IMAGE_QUALITY")
 QUALITY_VALUES = {"low", "medium", "high", "auto"}
@@ -69,6 +80,21 @@ QUALITY_ALIASES = {
     "自动": "auto",
     "auto": "auto",
 }
+CODEX_CONFIG_PATH_ENV_NAMES = ("CODEX_CONFIG_PATH", "CODEX_CONFIG_FILE")
+CODEX_AUTH_PATH_ENV_NAMES = ("CODEX_AUTH_PATH", "CODEX_AUTH_FILE")
+CODEX_HOME_ENV = "CODEX_HOME"
+ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+@dataclass(frozen=True)
+class CodexSettings:
+    """Non-secret settings discovered from Codex's own config files."""
+
+    base_url: Optional[str] = None
+    base_url_source: Optional[str] = None
+    api_key: Optional[str] = None
+    api_key_env: Optional[str] = None
+    api_key_source: Optional[str] = None
 
 
 def fail(message: str, code: int = 1) -> NoReturn:
@@ -88,10 +114,261 @@ def first_nonempty_env(names: Iterable[str]) -> Tuple[Optional[str], Optional[st
     return None, None
 
 
-def resolve_base_url(explicit: Optional[str]) -> Tuple[str, str]:
+def _codex_file_pairs() -> List[Tuple[Path, Path]]:
+    """Return standard Codex config/auth pairs without scanning unrelated files."""
+    explicit_config, _ = first_nonempty_env(CODEX_CONFIG_PATH_ENV_NAMES)
+    explicit_auth, _ = first_nonempty_env(CODEX_AUTH_PATH_ENV_NAMES)
+    homes: List[Path] = []
+    configured_home = os.getenv(CODEX_HOME_ENV, "").strip()
+    if configured_home:
+        homes.append(Path(configured_home).expanduser())
+    else:
+        for candidate in (
+            os.getenv("USERPROFILE", "").strip(),
+            os.getenv("HOME", "").strip(),
+        ):
+            if candidate:
+                homes.append(Path(candidate).expanduser() / ".codex")
+        try:
+            homes.append(Path.home() / ".codex")
+        except RuntimeError:
+            pass
+
+    pairs: List[Tuple[Path, Path]] = []
+    if explicit_config or explicit_auth:
+        config_path = Path(explicit_config).expanduser() if explicit_config else None
+        auth_path = Path(explicit_auth).expanduser() if explicit_auth else None
+        if config_path is None and auth_path is not None:
+            config_path = auth_path.parent / "config.toml"
+        if auth_path is None and config_path is not None:
+            auth_path = config_path.parent / "auth.json"
+        if config_path is not None and auth_path is not None:
+            pairs.append((config_path, auth_path))
+        return pairs
+
+    seen: set[Tuple[str, str]] = set()
+    for home in homes:
+        config_path = home / "config.toml"
+        auth_path = home / "auth.json"
+        key = (str(config_path).lower(), str(auth_path).lower())
+        if key not in seen:
+            seen.add(key)
+            pairs.append((config_path, auth_path))
+    return pairs
+
+
+def _toml_scalar(raw: str) -> Any:
+    value = raw.split("#", 1)[0].strip()
+    if not value:
+        return None
+    try:
+        return ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return value.strip("\"'")
+
+
+def _load_codex_toml(path: Path) -> Dict[str, Any]:
+    try:
+        exists = path.is_file()
+    except OSError:
+        return {}
+    if not exists:
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {}
+    try:
+        import tomllib
+
+        parsed = tomllib.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except (ImportError, ValueError, TypeError):
+        # Python 3.9 has no tomllib. The fallback covers the Codex provider
+        # fields while keeping the helper dependency-free.
+        parsed: Dict[str, Any] = {}
+        section: Optional[Dict[str, Any]] = parsed
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                name = line[1:-1].strip()
+                section = parsed
+                if name == "model_providers":
+                    section = parsed.setdefault("model_providers", {})
+                elif name.startswith("model_providers."):
+                    provider_name = name.split(".", 1)[1].strip("\"'")
+                    providers = parsed.setdefault("model_providers", {})
+                    section = providers.setdefault(provider_name, {})
+                elif name.startswith("profiles."):
+                    profile_name = name.split(".", 1)[1].strip("\"'")
+                    profiles = parsed.setdefault("profiles", {})
+                    section = profiles.setdefault(profile_name, {})
+                else:
+                    # Ignore unrelated sections so profile-local keys cannot
+                    # overwrite the top-level active provider in the fallback.
+                    section = None
+                continue
+            match = re.match(r"^([A-Za-z0-9_.-]+)\s*=\s*(.+)$", line)
+            if match and section is not None:
+                section[match.group(1)] = _toml_scalar(match.group(2))
+        return parsed
+
+
+def _load_codex_auth(path: Path) -> Dict[str, Any]:
+    try:
+        exists = path.is_file()
+    except OSError:
+        return {}
+    if not exists:
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _mapping_value(mapping: Dict[str, Any], names: Iterable[str]) -> Any:
+    wanted = {name.casefold() for name in names}
+    for key, value in mapping.items():
+        if isinstance(key, str) and key.casefold() in wanted:
+            return value
+    return None
+
+
+def _selected_codex_provider(config: Dict[str, Any]) -> Dict[str, Any]:
+    profile_name = os.getenv("CODEX_PROFILE", "").strip() or _mapping_value(
+        config, ("profile",)
+    )
+    profile: Dict[str, Any] = {}
+    profiles = _mapping_value(config, ("profiles",))
+    if isinstance(profiles, dict) and isinstance(profile_name, str):
+        candidate = _mapping_value(profiles, (profile_name,))
+        if isinstance(candidate, dict):
+            profile = candidate
+    provider_name = _mapping_value(profile, ("model_provider",)) or _mapping_value(
+        config, ("model_provider",)
+    )
+    providers = _mapping_value(config, ("model_providers",))
+    if not isinstance(providers, dict) or not isinstance(provider_name, str):
+        return {}
+    provider = _mapping_value(providers, (provider_name,))
+    return provider if isinstance(provider, dict) else {}
+
+
+def _auth_value(auth: Dict[str, Any], names: Iterable[str]) -> Optional[str]:
+    wanted = {name.casefold() for name in names}
+    for key, value in auth.items():
+        if isinstance(key, str) and key.casefold() in wanted and isinstance(value, str):
+            value = value.strip()
+            if value:
+                return value
+    return None
+
+
+def _codex_auth_allowed(provider: Dict[str, Any], env_key: Optional[str]) -> bool:
+    if env_key:
+        return True
+    requires_auth = _mapping_value(provider, ("requires_openai_auth",))
+    if requires_auth is False:
+        return False
+    return not (isinstance(requires_auth, str) and requires_auth.casefold() == "false")
+
+
+def discover_codex_settings() -> CodexSettings:
+    """Read the active Codex provider URL and its key without exposing secrets."""
+    discovered_url: Optional[str] = None
+    discovered_url_source: Optional[str] = None
+    discovered_key: Optional[str] = None
+    discovered_key_env: Optional[str] = None
+    discovered_key_source: Optional[str] = None
+    fallback_auth: Optional[Tuple[Path, Dict[str, Any]]] = None
+    for config_path, auth_path in _codex_file_pairs():
+        config = _load_codex_toml(config_path)
+        provider = _selected_codex_provider(config)
+        if not provider:
+            # A few older Codex config snapshots put provider fields at the
+            # root. Accept that shape only at the explicitly discovered path.
+            provider = config
+        auth = _load_codex_auth(auth_path) if discovered_key is None else {}
+        if discovered_url is None:
+            for field in ("base_url", "api_url", "url", "endpoint"):
+                candidate = _mapping_value(provider, (field,)) or _mapping_value(
+                    config, (field,)
+                )
+                if isinstance(candidate, str) and candidate.strip():
+                    discovered_url = candidate.strip()
+                    discovered_url_source = f"codex-config:{config_path}:{field}"
+                    break
+
+        env_key = _mapping_value(provider, ("env_key", "api_key_env", "key_env"))
+        if isinstance(env_key, str):
+            env_key = env_key.strip()
+            if not ENV_NAME_PATTERN.fullmatch(env_key):
+                env_key = None
+        else:
+            env_key = None
+        allow_auth = _codex_auth_allowed(provider, env_key)
+        if auth and allow_auth and fallback_auth is None:
+            fallback_auth = (auth_path, auth)
+        if discovered_key is None and env_key:
+            env_value = os.getenv(env_key, "").strip()
+            if env_value:
+                discovered_key = env_value
+                discovered_key_env = env_key
+                discovered_key_source = f"codex-config:{config_path}:env_key"
+
+        if discovered_key is None:
+            direct_key = _mapping_value(provider, ("api_key", "apiKey"))
+            if isinstance(direct_key, str) and direct_key.strip():
+                discovered_key = direct_key.strip()
+                discovered_key_env = None
+                discovered_key_source = f"codex-config:{config_path}:api_key"
+
+        if discovered_key is None and allow_auth:
+            auth_names = [
+                name for name in (env_key, "OPENAI_API_KEY") if name
+            ]
+            auth_value = _auth_value(auth, auth_names)
+            if auth_value:
+                discovered_key = auth_value
+                discovered_key_env = None
+                discovered_key_source = f"codex-auth:{auth_path}:OPENAI_API_KEY"
+
+        if discovered_url is not None and discovered_key is not None:
+            break
+
+    if discovered_key is None and fallback_auth is not None:
+        auth_path, auth = fallback_auth
+        auth_value = _auth_value(auth, ("OPENAI_API_KEY",))
+        if auth_value:
+            discovered_key = auth_value
+            discovered_key_env = None
+            discovered_key_source = f"codex-auth:{auth_path}:OPENAI_API_KEY"
+
+    return CodexSettings(
+        base_url=discovered_url,
+        base_url_source=discovered_url_source,
+        api_key=discovered_key,
+        api_key_env=discovered_key_env,
+        api_key_source=discovered_key_source,
+    )
+
+
+def resolve_base_url(
+    explicit: Optional[str], codex: Optional[CodexSettings] = None
+) -> Tuple[str, str]:
     if explicit:
         return explicit, "--base-url"
-    value, source = first_nonempty_env(BASE_URL_ENV_NAMES)
+    value, source = first_nonempty_env(BASE_URL_SKILL_ENV_NAMES)
+    if value is not None and source is not None:
+        return value, source
+    codex = codex or discover_codex_settings()
+    if codex.base_url and codex.base_url_source:
+        return codex.base_url, codex.base_url_source
+    value, source = first_nonempty_env(BASE_URL_GENERIC_ENV_NAMES)
     if value is not None and source is not None:
         return value, source
     return DEFAULT_BASE_URL, "skill-default"
@@ -172,16 +449,48 @@ def resolve_quality(explicit: Optional[str], prompt: str) -> Tuple[str, str]:
     return prompt_value, prompt_source
 
 
-def resolve_api_key_env(explicit: Optional[str]) -> Tuple[str, str]:
+def resolve_api_key_env(
+    explicit: Optional[str], codex: Optional[CodexSettings] = None
+) -> Tuple[str, str]:
     if explicit:
         return explicit, "--api-key-env"
     selector = os.getenv("IMAGE_API_KEY_ENV", "").strip()
     if selector and os.getenv(selector, "").strip():
         return selector, "IMAGE_API_KEY_ENV"
-    _, source = first_nonempty_env(API_KEY_ENV_NAMES)
+    _, source = first_nonempty_env(API_KEY_SKILL_ENV_NAMES)
+    if source is not None:
+        return source, source
+    codex = codex or discover_codex_settings()
+    if codex.api_key_env and os.getenv(codex.api_key_env, "").strip():
+        return codex.api_key_env, codex.api_key_source or "codex-config"
+    _, source = first_nonempty_env(API_KEY_GENERIC_ENV_NAMES)
     if source is not None:
         return source, source
     return API_KEY_ENV_NAMES[0], "no-key-found"
+
+
+def resolve_api_key(
+    explicit: Optional[str], codex: Optional[CodexSettings] = None
+) -> Tuple[Optional[str], str]:
+    """Resolve a key from explicit/env settings, then the active Codex config."""
+    if explicit:
+        value = os.getenv(explicit, "").strip()
+        return (value or None), ("--api-key-env" if value else "no-key-found")
+    selector = os.getenv("IMAGE_API_KEY_ENV", "").strip()
+    if selector:
+        value = os.getenv(selector, "").strip()
+        if value:
+            return value, "IMAGE_API_KEY_ENV"
+    value, source = first_nonempty_env(API_KEY_SKILL_ENV_NAMES)
+    if value is not None and source is not None:
+        return value, source
+    codex = codex or discover_codex_settings()
+    if codex.api_key and codex.api_key_source:
+        return codex.api_key, codex.api_key_source
+    value, source = first_nonempty_env(API_KEY_GENERIC_ENV_NAMES)
+    if value is not None and source is not None:
+        return value, source
+    return None, "no-key-found"
 
 
 def read_prompt(prompt: Optional[str], prompt_file: Optional[str]) -> str:
@@ -529,9 +838,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     prompt = read_prompt(args.prompt, args.prompt_file)
-    base_url_raw, base_url_source = resolve_base_url(args.base_url)
+    codex_settings = discover_codex_settings()
+    base_url_raw, base_url_source = resolve_base_url(args.base_url, codex_settings)
     model, model_source = resolve_model(args.model)
-    api_key_env, api_key_source = resolve_api_key_env(args.api_key_env)
+    api_key, api_key_source = resolve_api_key(args.api_key_env, codex_settings)
     size, size_source = resolve_size(args.size, prompt)
     quality, quality_source = resolve_quality(args.quality, prompt)
     if args.operation not in {"auto", "edit", "generate"}:
@@ -606,11 +916,10 @@ def main() -> int:
         )
         return 0
 
-    api_key = os.getenv(api_key_env, "").strip()
     if not api_key:
         fail(
             f"no API key found; set one of {', '.join(API_KEY_ENV_NAMES)} "
-            "or configure IMAGE_API_KEY_ENV"
+            "or configure IMAGE_API_KEY_ENV/Codex auth"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"Calling {base_url + endpoint} with model {model} ...", file=sys.stderr)
