@@ -28,8 +28,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_BASE_URL = "https://api1.feizhiyx.com/v1"
 DEFAULT_MODEL = "gpt-image-2"
-DEFAULT_SIZE = "1024x1024"
-DEFAULT_QUALITY = "high"
+DEFAULT_SIZE = "auto"
+DEFAULT_QUALITY = "auto"
 DEFAULT_FORMAT = "png"
 DEFAULT_RETRIES = 0
 MAX_REFERENCE_BYTES = 50 * 1024 * 1024
@@ -51,6 +51,24 @@ API_KEY_ENV_NAMES = (
     "CODEX_IMAGE_API_KEY",
     "API_KEY",
 )
+SIZE_ENV_NAMES = ("IMAGE_SIZE", "OPENAI_IMAGE_SIZE")
+QUALITY_ENV_NAMES = ("IMAGE_QUALITY", "OPENAI_IMAGE_QUALITY")
+QUALITY_VALUES = {"low", "medium", "high", "auto"}
+QUALITY_ALIASES = {
+    "低": "low",
+    "低质量": "low",
+    "low": "low",
+    "中": "medium",
+    "中等": "medium",
+    "中等质量": "medium",
+    "medium": "medium",
+    "高": "high",
+    "高质量": "high",
+    "高清": "high",
+    "high": "high",
+    "自动": "auto",
+    "auto": "auto",
+}
 
 
 def fail(message: str, code: int = 1) -> NoReturn:
@@ -86,6 +104,72 @@ def resolve_model(explicit: Optional[str]) -> Tuple[str, str]:
     if value is not None and source is not None:
         return value, source
     return DEFAULT_MODEL, "skill-default"
+
+
+def infer_size_from_prompt(prompt: str) -> Tuple[str, str]:
+    """Extract an explicit WIDTHxHEIGHT request, otherwise leave sizing to API auto."""
+    labeled = re.search(
+        r"(?:size|尺寸|分辨率|画布|输出(?:尺寸|分辨率))\s*"
+        r"(?:is|为|是|设为|设置为|要求|要求为|:|：|=)?\s*"
+        r"(\d{3,4})\s*[x×*]\s*(\d{3,4})",
+        prompt,
+        re.IGNORECASE,
+    )
+    match = labeled or re.search(
+        r"(?<!\d)(\d{3,4})\s*[x×*]\s*(\d{3,4})(?!\d)",
+        prompt,
+        re.IGNORECASE,
+    )
+    if match:
+        return f"{int(match.group(1))}x{int(match.group(2))}", "prompt"
+    return DEFAULT_SIZE, "skill-auto"
+
+
+def normalize_size_value(value: str) -> str:
+    return re.sub(r"\s+", "", value.strip().lower().replace("×", "x").replace("*", "x"))
+
+
+def normalize_quality_value(value: str) -> str:
+    cleaned = value.strip().lower()
+    return QUALITY_ALIASES.get(cleaned, cleaned)
+
+
+def infer_quality_from_prompt(prompt: str) -> Tuple[str, str]:
+    """Extract an explicit quality request without treating generic praise as quality."""
+    match = re.search(
+        r"(?:quality|质量|画质|输出质量)\s*"
+        r"(?:is|为|是|设为|设置为|要求|要求为|:|：|=)?\s*"
+        r"(low|medium|high|auto|低质量|中等质量|中等|高质量|高清|低|中|高|自动)",
+        prompt,
+        re.IGNORECASE,
+    )
+    if not match:
+        return DEFAULT_QUALITY, "skill-auto"
+    return normalize_quality_value(match.group(1)), "prompt"
+
+
+def resolve_size(explicit: Optional[str], prompt: str) -> Tuple[str, str]:
+    if explicit:
+        return normalize_size_value(explicit), "--size"
+    prompt_value, prompt_source = infer_size_from_prompt(prompt)
+    if prompt_source == "prompt":
+        return prompt_value, prompt_source
+    value, source = first_nonempty_env(SIZE_ENV_NAMES)
+    if value is not None and source is not None:
+        return normalize_size_value(value), source
+    return prompt_value, prompt_source
+
+
+def resolve_quality(explicit: Optional[str], prompt: str) -> Tuple[str, str]:
+    if explicit:
+        return normalize_quality_value(explicit), "--quality"
+    prompt_value, prompt_source = infer_quality_from_prompt(prompt)
+    if prompt_source == "prompt":
+        return prompt_value, prompt_source
+    value, source = first_nonempty_env(QUALITY_ENV_NAMES)
+    if value is not None and source is not None:
+        return normalize_quality_value(value), source
+    return prompt_value, prompt_source
 
 
 def resolve_api_key_env(explicit: Optional[str]) -> Tuple[str, str]:
@@ -267,7 +351,7 @@ def decode_data_url(value: str) -> bytes:
         fail(f"invalid base64 image data: {exc}")
 
 
-def download_image(url: str, timeout: float) -> bytes:
+def download_image(url: str, timeout: float, secret: Optional[str] = None) -> bytes:
     if url.startswith("data:"):
         return decode_data_url(url)
     request = urllib.request.Request(
@@ -278,10 +362,20 @@ def download_image(url: str, timeout: float) -> bytes:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
     except (urllib.error.URLError, OSError) as exc:
-        fail(f"could not download returned image URL: {exc}")
+        reason = getattr(exc, "reason", exc)
+        safe_reason = re.sub(r"https?://[^\s)]+", "[REDACTED_URL]", str(reason))
+        fail(
+            "could not download returned image URL: "
+            f"{scrub(safe_reason, secret)[:600]}"
+        )
 
 
-def response_image(payload: bytes, content_type: str, timeout: float) -> bytes:
+def response_image(
+    payload: bytes,
+    content_type: str,
+    timeout: float,
+    secret: Optional[str] = None,
+) -> bytes:
     if content_type.lower().startswith("image/") or payload.startswith(
         (b"\x89PNG", b"\xff\xd8\xff", b"RIFF")
     ):
@@ -307,7 +401,7 @@ def response_image(payload: bytes, content_type: str, timeout: float) -> bytes:
             fail(f"API returned invalid base64 image data: {exc}")
     url = item.get("url") or item.get("image_url")
     if isinstance(url, str):
-        return download_image(url, timeout)
+        return download_image(url, timeout, secret)
     fail("API response contained no b64_json or url image")
 
 
@@ -399,12 +493,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--size",
-        default=(os.getenv("IMAGE_SIZE") or os.getenv("OPENAI_IMAGE_SIZE") or DEFAULT_SIZE),
+        help="requested WIDTHxHEIGHT; otherwise infer from the prompt or use auto",
     )
     parser.add_argument(
         "--quality",
-        default=(os.getenv("IMAGE_QUALITY") or os.getenv("OPENAI_IMAGE_QUALITY") or DEFAULT_QUALITY),
+        type=normalize_quality_value,
         choices=("low", "medium", "high", "auto"),
+        help="requested quality; otherwise infer from the prompt or use auto",
     )
     parser.add_argument(
         "--output-format",
@@ -437,11 +532,13 @@ def main() -> int:
     base_url_raw, base_url_source = resolve_base_url(args.base_url)
     model, model_source = resolve_model(args.model)
     api_key_env, api_key_source = resolve_api_key_env(args.api_key_env)
+    size, size_source = resolve_size(args.size, prompt)
+    quality, quality_source = resolve_quality(args.quality, prompt)
     if args.operation not in {"auto", "edit", "generate"}:
         fail("--operation must be auto, edit, or generate")
-    if args.quality not in {"low", "medium", "high", "auto"}:
+    if quality not in QUALITY_VALUES:
         fail("--quality must be low, medium, high, or auto")
-    validate_size(args.size)
+    validate_size(size)
     if args.retries < 0 or args.retries > 8:
         fail("--retries must be between 0 and 8")
     if args.timeout <= 0:
@@ -469,8 +566,8 @@ def main() -> int:
     fields = {
         "model": model,
         "prompt": prompt,
-        "size": args.size,
-        "quality": args.quality,
+        "size": size,
+        "quality": quality,
         "output_format": output_format_value,
         "n": "1",
     }
@@ -493,9 +590,11 @@ def main() -> int:
                         "base_url": base_url_source,
                         "model": model_source,
                         "api_key": api_key_source,
+                        "size": size_source,
+                        "quality": quality_source,
                     },
-                    "size": args.size,
-                    "quality": args.quality,
+                    "size": size,
+                    "quality": quality,
                     "output_format": output_format_value,
                     "reference": str(reference) if reference else None,
                     "output": str(output),
@@ -526,10 +625,10 @@ def main() -> int:
         )
     except RuntimeError as exc:
         fail(str(exc))
-    image = response_image(response, content_type_response, args.timeout)
+    image = response_image(response, content_type_response, args.timeout, api_key)
     dimensions = image_dimensions(image)
     actual_format = image_format(image)
-    target = requested_dimensions(args.size)
+    target = requested_dimensions(size)
     if args.normalize_size and target:
         image = normalize_image(image, target, output_format_value)
         dimensions = image_dimensions(image) or target
@@ -568,10 +667,12 @@ def main() -> int:
                         "base_url": base_url_source,
                         "model": model_source,
                         "api_key": api_key_source,
+                        "size": size_source,
+                        "quality": quality_source,
                     },
-                    "size_requested": args.size,
+                    "size_requested": size,
                     "size_actual": list(dimensions) if dimensions else None,
-                    "quality": args.quality,
+                    "quality": quality,
                     "output_format": output_format_value,
                     "reference": str(reference) if reference else None,
                     "output": str(output),
