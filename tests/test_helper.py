@@ -38,6 +38,16 @@ class HelperTests(unittest.TestCase):
                 ("OPENAI_API_KEY", "OPENAI_API_KEY"),
             )
 
+        with patch.dict(
+            "os.environ",
+            {"IMAGE_API_KEY_ENV": "MISSING_KEY", "API_KEY": "fallback-key"},
+            clear=True,
+        ):
+            self.assertEqual(
+                generate_poster.resolve_api_key_env(None),
+                ("API_KEY", "API_KEY"),
+            )
+
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(
                 generate_poster.resolve_base_url(None),
@@ -61,6 +71,17 @@ class HelperTests(unittest.TestCase):
             generate_poster.normalize_base_url("https://example.test/v1/"),
             "https://example.test/v1",
         )
+        self.assertEqual(
+            generate_poster.normalize_base_url("https://example.test/api"),
+            "https://example.test/api/v1",
+        )
+        for unsafe in (
+            "https://user:secret@example.test/v1",
+            "https://example.test/v1?api_key=secret",
+            "https://example.test/v1#fragment",
+        ):
+            with self.assertRaises(SystemExit):
+                generate_poster.normalize_base_url(unsafe)
 
     def test_image_headers(self):
         png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + bytes.fromhex("0000040000000400")

@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 import uuid
 from typing import Any, Dict, Iterable, List, NoReturn, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 
 DEFAULT_BASE_URL = "https://api1.feizhiyx.com/v1"
@@ -37,6 +38,7 @@ MAX_REFERENCE_BYTES = 50 * 1024 * 1024
 # finally the generic names some local shells use. Empty variables are ignored.
 BASE_URL_ENV_NAMES = (
     "IMAGE_API_BASE_URL",
+    "IMAGE_API_URL",
     "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_URL",
@@ -87,9 +89,11 @@ def resolve_model(explicit: Optional[str]) -> Tuple[str, str]:
 
 
 def resolve_api_key_env(explicit: Optional[str]) -> Tuple[str, str]:
-    selector = explicit or os.getenv("IMAGE_API_KEY_ENV", "").strip()
-    if selector:
-        return selector, "--api-key-env" if explicit else "IMAGE_API_KEY_ENV"
+    if explicit:
+        return explicit, "--api-key-env"
+    selector = os.getenv("IMAGE_API_KEY_ENV", "").strip()
+    if selector and os.getenv(selector, "").strip():
+        return selector, "IMAGE_API_KEY_ENV"
     _, source = first_nonempty_env(API_KEY_ENV_NAMES)
     if source is not None:
         return source, source
@@ -112,14 +116,22 @@ def read_prompt(prompt: Optional[str], prompt_file: Optional[str]) -> str:
 
 
 def normalize_base_url(raw: str) -> str:
-    value = raw.strip().rstrip("/")
+    value = raw.strip()
     if not value:
         fail("API base URL cannot be empty")
-    if re.search(r"/images/(?:edits|generations)$", value):
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        fail("API base URL must be an http(s) URL with a hostname")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        fail("API base URL cannot contain userinfo, query parameters, or fragments")
+    path = parsed.path.rstrip("/")
+    if re.search(r"/images/(?:edits|generations)$", path):
         fail("--base-url must stop at the API version, for example https://host/v1")
-    if not re.search(r"/v1$", value):
-        value += "/v1"
-    return value
+    if not path:
+        path = "/v1"
+    elif not re.search(r"/v1$", path):
+        path += "/v1"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
 def validate_size(size: str) -> None:
@@ -425,6 +437,10 @@ def main() -> int:
     base_url_raw, base_url_source = resolve_base_url(args.base_url)
     model, model_source = resolve_model(args.model)
     api_key_env, api_key_source = resolve_api_key_env(args.api_key_env)
+    if args.operation not in {"auto", "edit", "generate"}:
+        fail("--operation must be auto, edit, or generate")
+    if args.quality not in {"low", "medium", "high", "auto"}:
+        fail("--quality must be low, medium, high, or auto")
     validate_size(args.size)
     if args.retries < 0 or args.retries > 8:
         fail("--retries must be between 0 and 8")
@@ -495,7 +511,7 @@ def main() -> int:
     if not api_key:
         fail(
             f"no API key found; set one of {', '.join(API_KEY_ENV_NAMES)} "
-            f"or configure IMAGE_API_KEY_ENV (selected variable: {api_key_env})"
+            "or configure IMAGE_API_KEY_ENV"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"Calling {base_url + endpoint} with model {model} ...", file=sys.stderr)
