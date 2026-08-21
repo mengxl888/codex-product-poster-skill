@@ -15,6 +15,8 @@ python scripts/generate_poster.py `
 
 The helper first uses compatible values already present in the current system environment. If none are present, it falls back to `https://api1.feizhiyx.com/v1` and `gpt-image-2`; an API key is never built in. Set `IMAGE_API_BASE_URL` or `OPENAI_BASE_URL` to override the URL, and use `OPENAI_API_KEY` (or another documented key variable) for credentials. See [references/configuration.md](references/configuration.md) and [SKILL.md](SKILL.md) for the full precedence order.
 
+The same discovery applies to `IMAGE_API_OPERATION`, `IMAGE_SIZE`/`OPENAI_IMAGE_SIZE`, `IMAGE_QUALITY`/`OPENAI_IMAGE_QUALITY`, and `IMAGE_OUTPUT_FORMAT` when their command-line flags are omitted.
+
 When model-rendered Chinese is not exact, use `scripts/overlay_text.py` with a CJK font; see [references/typography.md](references/typography.md).
 
 ## Requirements
