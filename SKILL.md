@@ -9,9 +9,9 @@ Use this skill for a product-focused promotional image, especially when the user
 
 ## Defaults
 
-- Configuration: honor explicit CLI values first, then Skill-specific environment variables, the active Codex provider in `CODEX_HOME/config.toml` (or the standard `~/.codex/config.toml`), generic environment aliases, and finally Skill defaults. The provider's `base_url` supplies the API URL; its `env_key` names the API-key variable. URL fallback is `https://api1.feizhiyx.com/v1`.
+- Configuration: honor explicit CLI values first, then Skill-specific environment variables, the active Codex provider in `CODEX_HOME/config.toml` (or the standard `~/.codex/config.toml`), and generic environment aliases. The provider's `base_url` supplies the API URL; its `env_key` names the API-key variable. There is no built-in API URL: configure one of these sources before a live request.
 - Model: use `CODEX_IMAGE_MODEL`, `IMAGE_MODEL`, or `OPENAI_IMAGE_MODEL` when set; otherwise fall back to `gpt-image-2` (override only when the user explicitly asks for another model).
-- Endpoint: `/images/edits` when a reference image is supplied; `/images/generations` otherwise. This is the OpenAI-compatible relay operation verified for the default service; use `--operation` to make the choice explicit.
+- Endpoint: `/images/edits` when a reference image is supplied; `/images/generations` otherwise. These are OpenAI-compatible operations; use `--operation` to make the choice explicit.
 - Size and quality are request-controlled rather than fixed in the Skill. Precedence is explicit `--size`/`--quality`, then a value stated in the user's prompt, then `IMAGE_SIZE`/`OPENAI_IMAGE_SIZE` or `IMAGE_QUALITY`/`OPENAI_IMAGE_QUALITY` from the current environment, and finally `auto` when no value is available. `IMAGE_OUTPUT_FORMAT` still falls back to the output filename extension (PNG when no extension is given).
 - `IMAGE_API_OPERATION` can select `auto`, `edit`, or `generate` when the flag is omitted.
 - Credential: `--api-key-env`/`IMAGE_API_KEY_ENV` and Skill-specific key variables take precedence; otherwise use the active Codex provider's `env_key`, then its canonical `auth.json` `OPENAI_API_KEY` fallback, then generic `OPENAI_API_KEY`/`API_KEY`. Never put a key in a prompt, file, command log, or git commit.
@@ -39,7 +39,7 @@ Use this skill for a product-focused promotional image, especially when the user
 
 ## API and safety constraints
 
-- Use the relay configured above; do not silently switch providers if it fails. Report the HTTP error and stop after a small number of retries for transient failures.
+- Use the endpoint selected by the precedence above; do not silently switch providers if it fails. Report the HTTP error and stop after a small number of retries for transient failures.
 - For `gpt-image-2`, do not send `input_fidelity` and do not request native transparent output. Use a normal opaque background for posters.
 - Never log the `Authorization` header or include the token in metadata. Error output should be truncated and scrubbed of the key.
 - Read only the active Codex `config.toml` and canonical `auth.json`; never scan `.bak` files, backups, logs, or SQLite state. Treat `env_key` as a variable name, not as a secret. Configuration parse failures fall back to the remaining sources.

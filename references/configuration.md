@@ -2,15 +2,15 @@
 
 `scripts/generate_poster.py` uses only the Python standard library for API calls. Size normalization and deterministic text overlay use Pillow.
 
-## Environment and fallback order
+## Environment and precedence order
 
 ```powershell
 # Only set these when the current system environment does not already provide them.
 # $env:OPENAI_API_KEY = "<local secret>"
-# $env:IMAGE_API_BASE_URL = "https://api1.feizhiyx.com/v1"
+# $env:IMAGE_API_BASE_URL = "<configured-compatible-api-base-url>"
 ```
 
-At every invocation the helper discovers settings without caching secrets. URL precedence is `--base-url`, `IMAGE_API_BASE_URL`/`IMAGE_API_URL`, the active Codex provider's `base_url`, `OPENAI_BASE_URL`/`OPENAI_API_BASE`/`OPENAI_API_URL`/`API_URL`, then the Skill fallback `https://api1.feizhiyx.com/v1`. Key precedence is `--api-key-env`, `IMAGE_API_KEY_ENV`, `IMAGE_API_KEY`/`CODEX_IMAGE_API_KEY`, the active Codex provider's `env_key`, the canonical Codex `auth.json` `OPENAI_API_KEY` fallback, and finally `OPENAI_API_KEY`/`API_KEY`. If no key exists, the helper stops with a setup error; it never contains a built-in secret. Model precedence is `--model`, then `CODEX_IMAGE_MODEL`, `IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, then `gpt-image-2`.
+At every invocation the helper discovers settings without caching secrets. URL precedence is `--base-url`, `IMAGE_API_BASE_URL`/`IMAGE_API_URL`, the active Codex provider's `base_url`, then `OPENAI_BASE_URL`/`OPENAI_API_BASE`/`OPENAI_API_URL`/`API_URL`. There is no built-in API URL: a live request stops with a setup error when all of these are empty. Key precedence is `--api-key-env`, `IMAGE_API_KEY_ENV`, `IMAGE_API_KEY`/`CODEX_IMAGE_API_KEY`, the active Codex provider's `env_key`, the canonical Codex `auth.json` `OPENAI_API_KEY` fallback, and finally `OPENAI_API_KEY`/`API_KEY`. If no key exists, the helper stops with a setup error; it never contains a built-in secret. Model precedence is `--model`, then `CODEX_IMAGE_MODEL`, `IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, then `gpt-image-2`.
 
 Codex discovery reads only `CODEX_HOME/config.toml` (or the standard `~/.codex/config.toml`) and its sibling `auth.json`. `model_provider` selects `[model_providers.<name>]`; `base_url` is the API URL and `env_key` is the name of the environment variable containing the key. Set `CODEX_PROFILE` when a named `[profiles.<name>]` provider should be selected; otherwise the top-level `model_provider` is used. `CODEX_CONFIG_PATH` and `CODEX_AUTH_PATH` can override the two file paths. The helper never scans backups, logs, or SQLite state, and reports only source labels in dry-run/metadata.
 
@@ -33,6 +33,6 @@ python scripts/generate_poster.py --reference .\reference.jpg `
   --prompt "..." --output .\outputs\poster.png --dry-run
 ```
 
-The helper accepts `--model`, `--operation`, `--size`, `--quality`, `--output-format`, `--timeout`, `--retries`, `--strict-size`, and `--force`. It accepts either `--prompt` or `--prompt-file`, never both. A reference image selects `/images/edits`; no reference selects `/images/generations`. Retries default to `0` to avoid unintentionally duplicating a billable POST. `--dry-run` prints `configuration_sources` so you can verify which environment variable or fallback was selected without exposing the key.
+The helper accepts `--model`, `--operation`, `--size`, `--quality`, `--output-format`, `--timeout`, `--retries`, `--strict-size`, and `--force`. It accepts either `--prompt` or `--prompt-file`, never both. A reference image selects `/images/edits`; no reference selects `/images/generations`. Retries default to `0` to avoid unintentionally duplicating a billable POST. `--dry-run` prints `configuration_sources` so you can verify which environment variable or Codex setting was selected without exposing the key; when no URL is configured, its `endpoint` is `null` and no request is made.
 
 If the relay returns dimensions or a format different from the request, install Pillow in the active environment (`python -m pip install Pillow`) and use `--normalize-size`. Add `--strict-size` when the output must match the requested dimensions exactly; without it, a compatible but different relay size is reported as a warning. Format mismatches always fail rather than writing misleading bytes under the wrong extension. References larger than 50 MB are rejected before upload.

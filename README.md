@@ -14,7 +14,7 @@ python scripts/generate_poster.py `
   --normalize-size
 ```
 
-The helper discovers settings at invocation time. Explicit flags and Skill-specific environment variables take precedence, then the active Codex provider in `CODEX_HOME/config.toml` (or `~/.codex/config.toml`), then generic aliases; if no URL is found it falls back to `https://api1.feizhiyx.com/v1` and `gpt-image-2`. It never contains a built-in API key. See [references/configuration.md](references/configuration.md) and [SKILL.md](SKILL.md) for the full precedence order.
+The helper discovers settings at invocation time. Explicit flags and Skill-specific environment variables take precedence, then the active Codex provider in `CODEX_HOME/config.toml` (or `~/.codex/config.toml`), then generic aliases. The Skill contains no built-in API URL or API key; a live request stops with a setup error until a compatible URL is supplied by one of those sources. The model still defaults to `gpt-image-2`. See [references/configuration.md](references/configuration.md) and [SKILL.md](SKILL.md) for the full precedence order.
 
 The Codex provider uses `base_url` for the relay URL and `env_key` for the key variable. When that variable is unavailable, the canonical `auth.json` `OPENAI_API_KEY` is used only as a final Codex-config fallback; backup files and logs are never scanned. `CODEX_HOME`, `CODEX_PROFILE`, `CODEX_CONFIG_PATH`, and `CODEX_AUTH_PATH` can point discovery at an alternate Codex setup.
 

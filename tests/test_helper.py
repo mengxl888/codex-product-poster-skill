@@ -1,5 +1,5 @@
 import base64
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -57,7 +57,7 @@ class HelperTests(unittest.TestCase):
         ):
             self.assertEqual(
                 generate_poster.resolve_base_url(None),
-                (generate_poster.DEFAULT_BASE_URL, "skill-default"),
+                (None, "no-url-found"),
             )
             self.assertEqual(
                 generate_poster.resolve_model(None),
@@ -67,6 +67,49 @@ class HelperTests(unittest.TestCase):
                 generate_poster.resolve_api_key_env(None),
                 ("OPENAI_API_KEY", "no-key-found"),
             )
+
+    def test_missing_base_url_is_reported_without_network_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "empty-codex"
+            output = Path(directory) / "poster.png"
+            env = {"CODEX_HOME": str(home)}
+            with patch.dict("os.environ", env, clear=True), patch.object(
+                sys,
+                "argv",
+                [
+                    "generate_poster.py",
+                    "--prompt",
+                    "test poster",
+                    "--output",
+                    str(output),
+                    "--dry-run",
+                ],
+            ):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    self.assertEqual(generate_poster.main(), 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertIsNone(payload["endpoint"])
+            self.assertEqual(payload["configuration_sources"]["base_url"], "no-url-found")
+
+            with patch.dict(
+                "os.environ", {**env, "OPENAI_API_KEY": "test-key"}, clear=True
+            ), patch.object(
+                sys,
+                "argv",
+                [
+                    "generate_poster.py",
+                    "--prompt",
+                    "test poster",
+                    "--output",
+                    str(output),
+                ],
+            ):
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit):
+                        generate_poster.main()
+            self.assertIn("no API base URL found", stderr.getvalue())
 
     def test_codex_config_discovery(self):
         with tempfile.TemporaryDirectory() as directory:

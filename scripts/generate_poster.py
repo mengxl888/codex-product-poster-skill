@@ -28,7 +28,6 @@ from typing import Any, Dict, Iterable, List, NoReturn, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 
-DEFAULT_BASE_URL = "https://api1.feizhiyx.com/v1"
 DEFAULT_MODEL = "gpt-image-2"
 DEFAULT_SIZE = "auto"
 DEFAULT_QUALITY = "auto"
@@ -359,7 +358,7 @@ def discover_codex_settings() -> CodexSettings:
 
 def resolve_base_url(
     explicit: Optional[str], codex: Optional[CodexSettings] = None
-) -> Tuple[str, str]:
+) -> Tuple[Optional[str], str]:
     if explicit:
         return explicit, "--base-url"
     value, source = first_nonempty_env(BASE_URL_SKILL_ENV_NAMES)
@@ -371,7 +370,7 @@ def resolve_base_url(
     value, source = first_nonempty_env(BASE_URL_GENERIC_ENV_NAMES)
     if value is not None and source is not None:
         return value, source
-    return DEFAULT_BASE_URL, "skill-default"
+    return None, "no-url-found"
 
 
 def resolve_model(explicit: Optional[str]) -> Tuple[str, str]:
@@ -866,13 +865,15 @@ def main() -> int:
         if reference.stat().st_size > MAX_REFERENCE_BYTES:
             fail("reference image exceeds the 50MB API limit")
 
-    base_url = normalize_base_url(base_url_raw)
     if args.operation == "edit" and not reference:
         fail("--operation edit requires --reference")
     if args.operation == "generate" and reference:
         fail("--operation generate cannot use --reference; use --operation edit")
     use_edit = args.operation == "edit" or (args.operation == "auto" and reference is not None)
     endpoint = "/images/edits" if use_edit else "/images/generations"
+    base_url: Optional[str] = None
+    if base_url_raw:
+        base_url = normalize_base_url(base_url_raw)
     fields = {
         "model": model,
         "prompt": prompt,
@@ -893,7 +894,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "endpoint": base_url + endpoint,
+                    "endpoint": base_url + endpoint if base_url else None,
                     "operation": "edit" if use_edit else "generate",
                     "model": model,
                     "configuration_sources": {
@@ -916,6 +917,11 @@ def main() -> int:
         )
         return 0
 
+    if not base_url:
+        fail(
+            "no API base URL found; set --base-url, configure IMAGE_API_BASE_URL, "
+            "or set base_url in the active Codex provider"
+        )
     if not api_key:
         fail(
             f"no API key found; set one of {', '.join(API_KEY_ENV_NAMES)} "
